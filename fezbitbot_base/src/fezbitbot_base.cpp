@@ -18,10 +18,10 @@ public:
         this->declare_parameter("hostname", "Robot01.local");
         std::string hostname = this->get_parameter("hostname").as_string();
 
-        this->declare_parameter("wheel_radius", 0.1);
+        this->declare_parameter("wheel_radius", 0.02168);
         wheel_radius = this->get_parameter("wheel_radius").as_double();
 
-        this->declare_parameter("wheel_distance", 0.5);
+        this->declare_parameter("wheel_distance", 0.04873);
         wheel_distance = this->get_parameter("wheel_distance").as_double();
 
         struct hostent *hostInfo;
@@ -118,7 +118,7 @@ public:
                 // Take action based on the message type
                 switch (msg_type)
                 {
-                case 0x01:  // Wheel speed message handling
+                case 0x01: // Wheel speed message handling
                 {
                     ssize_t sent_bytes = send(tcp_socket_, data.data(), data.size(), 0);
 
