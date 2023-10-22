@@ -1,6 +1,6 @@
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist.hpp>
-#include <deque> // Include the header for deque
+#include <queue> // Include the header for deque
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -18,6 +18,12 @@ public:
         this->declare_parameter("hostname", "Robot01.local");
         std::string hostname = this->get_parameter("hostname").as_string();
 
+        this->declare_parameter("wheel_radius", 0.1);
+        wheel_radius = this->get_parameter("wheel_radius").as_double();
+
+        this->declare_parameter("wheel_distance", 0.5);
+        wheel_distance = this->get_parameter("wheel_distance").as_double();
+
         struct hostent *hostInfo;
         struct in_addr **addrList;
         hostInfo = gethostbyname(hostname.c_str());
@@ -31,12 +37,6 @@ public:
         addrList = (struct in_addr **)hostInfo->h_addr_list;
         std::string device_ip = inet_ntoa(*addrList[0]);
         int device_port = 12345;
-
-        START_OF_MESSAGE = std::vector<uint8_t>{0xAA, 0x55};
-        HEARTBEAT_MESSAGE = std::vector<uint8_t>{0x00};
-        TWIST_MESSAGE_PREFIX = std::vector<uint8_t>{0x01};
-
-        data_queue_ = std::deque<geometry_msgs::msg::Twist>();
 
         // Subscribe to the Twist topic
         subscription_ = this->create_subscription<geometry_msgs::msg::Twist>(
@@ -75,8 +75,25 @@ public:
     {
         try
         {
+            // Convert the Twist message to wheel velocities
+            float linear_velocity = static_cast<float>(msg->linear.x);
+            float angular_velocity = static_cast<float>(msg->angular.z);
+
+            float left_wheel_speed = (2 * linear_velocity - angular_velocity * wheel_distance) / (2 * wheel_radius);
+            float right_wheel_speed = (2 * linear_velocity + angular_velocity * wheel_distance) / (2 * wheel_radius);
+
+            // Create a byte array starting with 0xAA, 0x55
+            std::vector<uint8_t> byteArray(11);
+            byteArray[0] = 0xAA;
+            byteArray[1] = 0x55;
+            byteArray[2] = 0x01;
+
+            // Convert the float values to byte arrays
+            std::memcpy(&byteArray[3], &left_wheel_speed, sizeof(float));
+            std::memcpy(&byteArray[7], &right_wheel_speed, sizeof(float));
+
             // Put the message in the queue
-            data_queue_.push_back(*msg);
+            data_queue_.push(byteArray);
         }
         catch (const std::exception &e)
         {
@@ -90,54 +107,55 @@ public:
         {
             if (!data_queue_.empty())
             {
-                // If there's data in the queue, send it
-                geometry_msgs::msg::Twist data_to_send = data_queue_.front();
-                data_queue_.pop_front();
-                float linear_x = data_to_send.linear.x;
-                float angular_z = data_to_send.angular.z;
 
-                std::vector<uint8_t> twist_bytes;
-                twist_bytes.insert(twist_bytes.end(), START_OF_MESSAGE.begin(), START_OF_MESSAGE.end());
-                twist_bytes.insert(twist_bytes.end(), TWIST_MESSAGE_PREFIX.begin(), TWIST_MESSAGE_PREFIX.end());
-                uint8_t linear_x_bytes[4];
-                uint8_t angular_z_bytes[4];
-                memcpy(linear_x_bytes, &linear_x, sizeof(linear_x));
-                memcpy(angular_z_bytes, &angular_z, sizeof(angular_z));
-                twist_bytes.insert(twist_bytes.end(), linear_x_bytes, linear_x_bytes + sizeof(linear_x));
-                twist_bytes.insert(twist_bytes.end(), angular_z_bytes, angular_z_bytes + sizeof(angular_z));
+                // Pop the first element from the queue
+                std::vector<uint8_t> data = data_queue_.front();
+                data_queue_.pop();
 
-                ssize_t sent_bytes = send(tcp_socket_, twist_bytes.data(), twist_bytes.size(), 0);
+                // Identify the message type based on the third byte
+                uint8_t msg_type = data[2];
 
-                if (sent_bytes == -1)
+                // Take action based on the message type
+                switch (msg_type)
                 {
-                    perror("Error sending data over TCP");
-                }
-                else
+                case 0x01:  // Wheel speed message handling
                 {
-                    // Receive and process the server's response
-                    uint8_t response_data[1024];
-                    ssize_t received_bytes = recv(tcp_socket_, response_data, sizeof(response_data), 0);
-                    if (received_bytes > 0)
+                    ssize_t sent_bytes = send(tcp_socket_, data.data(), data.size(), 0);
+
+                    if (sent_bytes == -1)
                     {
-                        RCLCPP_INFO(this->get_logger(), "Received TWIST response");
-                    }
-                    else if (received_bytes == 0)
-                    {
-                        RCLCPP_ERROR(this->get_logger(), "Connection closed by remote host");
-                        rclcpp::shutdown();
+                        perror("Error sending Wheel speed over TCP");
                     }
                     else
                     {
-                        perror("Error receiving response data");
+                        // Receive and process the server's response
+                        uint8_t response_data[1024];
+                        ssize_t received_bytes = recv(tcp_socket_, response_data, sizeof(response_data), 0);
+                        if (received_bytes > 0)
+                        {
+                            RCLCPP_DEBUG(this->get_logger(), "Received Wheel speed response");
+                        }
+                        else if (received_bytes == 0)
+                        {
+                            RCLCPP_ERROR(this->get_logger(), "Connection closed by remote host");
+                            rclcpp::shutdown();
+                        }
+                        else
+                        {
+                            perror("Error receiving response data");
+                        }
                     }
+                }
+                break;
+
+                default:
+                    break;
                 }
             }
             else
             {
                 // If the queue is empty, send a heartbeat message
-                std::vector<uint8_t> heartbeat_bytes;
-                heartbeat_bytes.insert(heartbeat_bytes.end(), START_OF_MESSAGE.begin(), START_OF_MESSAGE.end());
-                heartbeat_bytes.insert(heartbeat_bytes.end(), HEARTBEAT_MESSAGE.begin(), HEARTBEAT_MESSAGE.end());
+                std::vector<uint8_t> heartbeat_bytes = {0xAA, 0x55, 0x00};
                 ssize_t sent_bytes = send(tcp_socket_, heartbeat_bytes.data(), heartbeat_bytes.size(), 0);
 
                 if (sent_bytes == -1)
@@ -151,7 +169,7 @@ public:
                     ssize_t received_bytes = recv(tcp_socket_, response_data, sizeof(response_data), 0);
                     if (received_bytes > 0)
                     {
-                        RCLCPP_INFO(this->get_logger(), "Received HEARTBEAT response");
+                        RCLCPP_DEBUG(this->get_logger(), "Received HEARTBEAT response");
                     }
                     else if (received_bytes == 0)
                     {
@@ -175,10 +193,12 @@ private:
     std::vector<uint8_t> START_OF_MESSAGE;
     std::vector<uint8_t> HEARTBEAT_MESSAGE;
     std::vector<uint8_t> TWIST_MESSAGE_PREFIX;
-    std::deque<geometry_msgs::msg::Twist> data_queue_;
+    std::queue<std::vector<uint8_t>> data_queue_;
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr subscription_;
     rclcpp::TimerBase::SharedPtr send_timer_;
     int tcp_socket_;
+    float wheel_radius;
+    float wheel_distance;
 };
 
 int main(int argc, char **argv)
