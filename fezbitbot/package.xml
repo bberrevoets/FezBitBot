@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="2">
+    <name>fezbitbot</name>
+    <version>0.0.1</version>
+    <description>
+        ROS packages for the FezBitBot (meta package)
+    </description>
+    <license>GNU AGPLv3</license>
+    <author email="bert@berrevoets.net">Bert</author>
+    <author>Bert Berrevoets</author>
+    <maintainer email="bert@berrevoets.net">Bert Berrevoets</maintainer>
+    <url type="website">https://github.com/bberrevoets/FezBitBot/wiki</url>
+    <url type="manual">https://github.com/bberrevoets/FezBitBot/wiki/Manual</url>
+    <url type="repository">https://github.com/bberrevoets/FezBitBot</url>
+    <url type="bugtracker">https://github.com/bberrevoets/FezBitBot/issues</url>
+    <buildtool_depend>catkin</buildtool_depend>
+    <exec_depend>fezbitbot_communication</exec_depend>
+    <export>
+        <metapackage />
+    </export>
+</package>
