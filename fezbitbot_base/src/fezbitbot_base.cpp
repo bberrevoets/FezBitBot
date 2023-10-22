@@ -1,18 +1,36 @@
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist.hpp>
-#include <deque>  // Include the header for deque
+#include <deque> // Include the header for deque
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netdb.h>
 #include <arpa/inet.h>
 #include <iostream>
+#include <cstring>
 
 class FezBitBotBase : public rclcpp::Node
 {
 public:
-    FezBitBotBase(const std::string &device_ip, int device_port, const std::string &twist_topic)
-        : Node("fezbitbot_base_node"), device_ip_(device_ip), device_port_(device_port), twist_topic_(twist_topic)
+    FezBitBotBase()
+        : Node("fezbitbot_base_node")
     {
+        this->declare_parameter("hostname", "Robot01.local");
+        std::string hostname = this->get_parameter("hostname").as_string();
+
+        struct hostent *hostInfo;
+        struct in_addr **addrList;
+        hostInfo = gethostbyname(hostname.c_str());
+        if (hostInfo == nullptr)
+        {
+            RCLCPP_ERROR(rclcpp::get_logger("FezBitBotBase"), "Can not find %s on the net", hostname.c_str());
+            rclcpp::shutdown();
+            exit(EXIT_FAILURE);
+        }
+
+        addrList = (struct in_addr **)hostInfo->h_addr_list;
+        std::string device_ip = inet_ntoa(*addrList[0]);
+        int device_port = 12345;
 
         START_OF_MESSAGE = std::vector<uint8_t>{0xAA, 0x55};
         HEARTBEAT_MESSAGE = std::vector<uint8_t>{0x00};
@@ -22,7 +40,7 @@ public:
 
         // Subscribe to the Twist topic
         subscription_ = this->create_subscription<geometry_msgs::msg::Twist>(
-            twist_topic_, 10, [this](const geometry_msgs::msg::Twist::SharedPtr msg)
+            "cmd_vel", 10, [this](const geometry_msgs::msg::Twist::SharedPtr msg)
             { twist_callback(msg); });
 
         // Initialize the TCP socket
@@ -36,8 +54,8 @@ public:
 
         struct sockaddr_in server_addr;
         server_addr.sin_family = AF_INET;
-        server_addr.sin_port = htons(device_port_);
-        inet_pton(AF_INET, device_ip_.c_str(), &server_addr.sin_addr);
+        server_addr.sin_port = htons(device_port);
+        inet_pton(AF_INET, device_ip.c_str(), &server_addr.sin_addr);
 
         // Connect to the device
         if (connect(tcp_socket_, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1)
@@ -48,7 +66,7 @@ public:
             exit(EXIT_FAILURE);
         }
 
-        RCLCPP_INFO(this->get_logger(), "Connected to %s:%d over TCP.", device_ip_.c_str(), device_port_);
+        RCLCPP_INFO(this->get_logger(), "Connected to %s:%d over TCP.", device_ip.c_str(), device_port);
 
         send_timer_ = this->create_wall_timer(std::chrono::milliseconds(100), std::bind(&FezBitBotBase::send_data, this));
     }
@@ -154,9 +172,6 @@ public:
     }
 
 private:
-    std::string device_ip_;
-    int device_port_;
-    std::string twist_topic_;
     std::vector<uint8_t> START_OF_MESSAGE;
     std::vector<uint8_t> HEARTBEAT_MESSAGE;
     std::vector<uint8_t> TWIST_MESSAGE_PREFIX;
@@ -169,14 +184,9 @@ private:
 int main(int argc, char **argv)
 {
     rclcpp::init(argc, argv);
-    std::string hostname = "Robot01.local";
     try
     {
-        std::string device_ip = "192.168.180.132"; // Change this to your device's IP
-        int device_port = 12345;
-        std::string twist_topic = "cmd_vel";
-
-        auto comms = std::make_shared<FezBitBotBase>(device_ip, device_port, twist_topic);
+        auto comms = std::make_shared<FezBitBotBase>();
         rclcpp::spin(comms);
     }
     catch (const std::exception &e)
